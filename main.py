@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 import json
 import os
+from zoneinfo import ZoneInfo  # native timezone support (Python 3.9+)
 
 # === PostgreSQL Config ===
 DB_USER = os.getenv("POSTGRES_USER")
@@ -42,9 +43,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Track the last saved minute (datetime object floored to minute)
+last_saved_minute = None
+
 # === WebSocket Endpoint (/ws) ===
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global last_saved_minute
     await websocket.accept()
     print("WebSocket connected")
 
@@ -58,11 +63,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 temperature = float(parsed.get("temperature"))
                 humidity = float(parsed.get("humidity"))
 
-                db = SessionLocal()
-                reading = SensorReading(temperature=temperature, humidity=humidity)
-                db.add(reading)
-                db.commit()
-                db.close()
+                # Get current UTC time rounded down to minute (e.g., 06:42:00)
+                now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Asia/Kolkata"))
+                current_minute = now.replace(second=0, microsecond=0)
+
+                if current_minute != last_saved_minute:
+
+                    db = SessionLocal()
+                    reading = SensorReading(temperature=temperature, humidity=humidity, timestamp=current_minute)
+                    db.add(reading)
+                    db.commit()
+                    db.close()
+
+                    last_saved_minute_ist = current_minute
+                    print(f"✅ Saved at {current_minute.isoformat()} (IST)")
+                else :
+                    print(f"⏳ Already saved at {last_saved_minute_ist.isoformat()}, skipping")
 
             except Exception as e:
                 print(f"Error processing data: {e}")
