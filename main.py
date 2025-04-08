@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, Query
+from fastapi import FastAPI, HTTPException, WebSocket, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Column, Float, Integer, DateTime, create_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -8,6 +8,7 @@ from typing import Optional
 import json
 import os
 from zoneinfo import ZoneInfo  # native timezone support (Python 3.9+)
+import zoneinfo
 
 # === PostgreSQL Config ===
 DB_USER = os.getenv("POSTGRES_USER")
@@ -43,13 +44,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Track the last saved minute (datetime object floored to minute)
-last_saved_minute = None
+# Global shared variable to store latest reading
+latest_reading = {
+    "temperature": None,
+    "humidity": None,
+    "timestamp": None  # Full UTC timestamp of when this was received
+}
+
+# print(zoneinfo.available_timezones())
+# print(datetime.now(ZoneInfo('Asia/Kolkata')))
 
 # === WebSocket Endpoint (/ws) ===
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global last_saved_minute
+    global latest_reading
     await websocket.accept()
     print("WebSocket connected")
 
@@ -62,23 +70,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 parsed = json.loads(data)
                 temperature = float(parsed.get("temperature"))
                 humidity = float(parsed.get("humidity"))
+                now = datetime.now(ZoneInfo('Asia/Kolkata'))
 
-                # Get current UTC time rounded down to minute (e.g., 06:42:00)
-                now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Asia/Kolkata"))
-                current_minute = now.replace(second=0, microsecond=0)
-
-                if current_minute != last_saved_minute:
-
-                    db = SessionLocal()
-                    reading = SensorReading(temperature=temperature, humidity=humidity, timestamp=current_minute)
-                    db.add(reading)
-                    db.commit()
-                    db.close()
-
-                    last_saved_minute_ist = current_minute
-                    print(f"✅ Saved at {current_minute.isoformat()} (IST)")
-                else :
-                    print(f"⏳ Already saved at {last_saved_minute_ist.isoformat()}, skipping")
+                # ✨ Keep in-memory record of the latest payload
+                latest_reading = {
+                    "temperature": temperature,
+                    "humidity": humidity,
+                    "timestamp": now
+                }
+                print(f"✅ Cached reading at {now.isoformat()}")
 
             except Exception as e:
                 print(f"Error processing data: {e}")
@@ -117,7 +117,38 @@ def get_data(
     except Exception as e:
         db.close()
         return {"error": str(e)}
-    
-@app.get("/hello")
+
+@app.post("/log-latest")
+def log_latest_reading():
+    global latest_reading
+
+    if not latest_reading["temperature"] or not latest_reading["humidity"]:
+        raise HTTPException(status_code=400, detail="No recent reading available.")
+
+    # Align to minute in IST
+    ist_now = datetime.now(ZoneInfo('Asia/Kolkata'))
+    aligned_ist_minute = ist_now.replace(second=0, microsecond=0)
+
+    try:
+        db = SessionLocal()
+        entry = SensorReading(
+            temperature=latest_reading["temperature"],
+            humidity=latest_reading["humidity"],
+            timestamp=aligned_ist_minute
+        )
+        db.add(entry)
+        db.commit()
+        db.close()
+        print(f"✅ Saved reading to DB at {aligned_ist_minute.isoformat()}")
+
+        return {
+            "status": "success",
+            "saved_at": aligned_ist_minute.isoformat(),
+            "data": latest_reading
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+@app.get("/healthcheck")
 def hello():
-    return {"msg": "Hello World"}
+    return {"Status": "Running"}
