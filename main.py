@@ -74,7 +74,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # ✨ Keep in-memory record of the latest payload
                 latest_reading = {
-                    "temperature": temperature,
+                    "temperature": temperature, 
                     "humidity": humidity,
                     "timestamp": now
                 }
@@ -109,7 +109,7 @@ def get_data(
                 "id": r.id,
                 "temperature": r.temperature,
                 "humidity": r.humidity,
-                "timestamp": r.timestamp.isoformat()
+                "timestamp": r.timestamp.astimezone(ZoneInfo("Asia/Kolkata")).isoformat()
             }
             for r in results
         ]
@@ -135,7 +135,7 @@ async def periodic_logger():
         await asyncio.sleep(60)  # Every 1 minute
         try:
             if latest_reading["temperature"] is not None and latest_reading["humidity"] is not None:
-                aligned_time = datetime.now(ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0)
+                aligned_time = datetime.now(ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0).isoformat()
 
                 db = SessionLocal()
                 record = SensorReading(
