@@ -135,7 +135,7 @@ async def periodic_logger():
         await asyncio.sleep(60)  # Every 1 minute
         try:
             if latest_reading["temperature"] is not None and latest_reading["humidity"] is not None:
-                aligned_time = datetime.now(ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0).isoformat()
+                aligned_time = datetime.now(ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0)
 
                 db = SessionLocal()
                 record = SensorReading(
