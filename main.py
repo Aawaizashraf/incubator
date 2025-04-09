@@ -5,6 +5,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from typing import Optional
+import asyncio
 import json
 import os
 from zoneinfo import ZoneInfo  # native timezone support (Python 3.9+)
@@ -26,7 +27,7 @@ class SensorReading(Base):
     id = Column(Integer, primary_key=True)
     temperature = Column(Float)
     humidity = Column(Float)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.now(ZoneInfo('Asia/Kolkata')))
 
 # Create database engine and session
 engine = create_engine(DATABASE_URL)
@@ -48,10 +49,9 @@ app.add_middleware(
 latest_reading = {
     "temperature": None,
     "humidity": None,
-    "timestamp": None  # Full UTC timestamp of when this was received
+    "timestamp": None  # Stored in IST
 }
 
-# print(zoneinfo.available_timezones())
 # print(datetime.now(ZoneInfo('Asia/Kolkata')))
 
 # === WebSocket Endpoint (/ws) ===
@@ -103,7 +103,6 @@ def get_data(
             query = query.filter(SensorReading.timestamp <= end_dt)
 
         results = query.order_by(SensorReading.timestamp).all()
-        db.close()
 
         return [
             {
@@ -115,40 +114,42 @@ def get_data(
             for r in results
         ]
     except Exception as e:
-        db.close()
         return {"error": str(e)}
-
-@app.post("/log-latest")
-def log_latest_reading():
-    global latest_reading
-
-    if not latest_reading["temperature"] or not latest_reading["humidity"]:
-        raise HTTPException(status_code=400, detail="No recent reading available.")
-
-    # Align to minute in IST
-    ist_now = datetime.now(ZoneInfo('Asia/Kolkata'))
-    aligned_ist_minute = ist_now.replace(second=0, microsecond=0)
-
-    try:
-        db = SessionLocal()
-        entry = SensorReading(
-            temperature=latest_reading["temperature"],
-            humidity=latest_reading["humidity"],
-            timestamp=aligned_ist_minute
-        )
-        db.add(entry)
-        db.commit()
+    finally:
         db.close()
-        print(f"✅ Saved reading to DB at {aligned_ist_minute.isoformat()}")
 
-        return {
-            "status": "success",
-            "saved_at": aligned_ist_minute.isoformat(),
-            "data": latest_reading
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {e}")
-
+# === Healthcheck ===
 @app.get("/healthcheck")
 def hello():
     return {"Status": "Running"}
+
+# === 🌟 Background Task to Store Every Minute ===
+
+@app.on_event("startup")
+async def start_logger_task():
+    asyncio.create_task(periodic_logger())
+
+async def periodic_logger():
+    global latest_reading
+    while True:
+        await asyncio.sleep(60)  # Every 1 minute
+        try:
+            if latest_reading["temperature"] is not None and latest_reading["humidity"] is not None:
+                aligned_time = datetime.now(ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0)
+
+                db = SessionLocal()
+                record = SensorReading(
+                    temperature=latest_reading["temperature"],
+                    humidity=latest_reading["humidity"],
+                    timestamp=aligned_time
+                )
+                db.add(record)
+                db.commit()
+                db.close()
+
+                print(f"✅ Stored data to DB at {aligned_time.isoformat()}: "
+                      f"{latest_reading['temperature']}°C, {latest_reading['humidity']}%")
+            else:
+                print("ℹ️ No valid reading to store yet.")
+        except Exception as e:
+            print(f"❌ Periodic DB logging failed: {e}")
